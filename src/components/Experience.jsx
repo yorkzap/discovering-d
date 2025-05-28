@@ -18,17 +18,20 @@ import * as THREE from "three";
 import { AudioVisualizer } from "./AudioVisualizer";
 import { pages as appPages } from "./UI";
 import { AnimatedBackground } from "./AnimatedBackground";
+import { DistantNebula } from "./DistantNebula";
 
 const INITIAL_CAMERA_POSITION = new THREE.Vector3(0, 0.5, 2.8);
 const INITIAL_TARGET_POSITION = new THREE.Vector3(0, 0.05, 0);
 
-// Boost constants
+// Enhanced boost constants for Need for Speed feel
 const BOOST_DURATION = 2000; // milliseconds (2 seconds)
-// The book's origin is roughly at Z=0. The camera is at Z=2.8.
-// Negative Z for the book means moving further away from the camera, deeper into the scene.
-const BOOST_Z_DISPLACEMENT_AWAY = -0.45; // How much further the book moves away from camera during boost. Adjusted for more noticeable effect.
+const BOOST_Z_DISPLACEMENT_AWAY = -2; // Increased for more dramatic effect
 const BASE_FLOAT_SPEED = 0.5;
 const BASE_FLOAT_INTENSITY = 0.05;
+
+// New boost physics constants
+const BOOST_MAX_SPEED_MULTIPLIER = 12; // Higher peak speed
+const BOOST_MAX_INTENSITY_MULTIPLIER = 6; // More dramatic floating
 
 export const Experience = () => {
   const [isFloatingActiveOriginal] = useAtom(bookFloatingAtom);
@@ -55,19 +58,41 @@ export const Experience = () => {
   const bookYPositionMusic = useRef(0);
   const boostZOffset = useRef(0);
 
-  // ... (useEffect for OrbitControls setup - unchanged)
-    useEffect(() => {
+  // Enhanced boost animation refs
+  const currentBoostIntensity = useRef(0);
+  const boostSpeedMultiplier = useRef(1);
+  const boostIntensityMultiplier = useRef(1);
+
+  useEffect(() => {
     if (initialControlsInstance) {
       controlsRef.current = initialControlsInstance;
+      
+      // Enhanced OrbitControls settings for smoother experience
+      controlsRef.current.enableDamping = true;
+      controlsRef.current.dampingFactor = 0.05;
+      controlsRef.current.screenSpacePanning = false;
+      controlsRef.current.minDistance = 0.5;
+      controlsRef.current.maxDistance = 10;
+      controlsRef.current.maxPolarAngle = Math.PI / 1.8; // Prevent going too low
+      controlsRef.current.minPolarAngle = Math.PI / 8; // Prevent going too high
+      
+      // Smoother zoom
+      controlsRef.current.zoomSpeed = 0.8;
+      controlsRef.current.rotateSpeed = 0.6;
+      controlsRef.current.panSpeed = 0.8;
+      
       const handleStart = () => setIsUserOrbiting(true);
       const handleEnd = () => setIsUserOrbiting(false);
+      
       controlsRef.current.addEventListener('start', handleStart);
       controlsRef.current.addEventListener('end', handleEnd);
+      
       if (!focus && !previousCameraState.current && controlsRef.current.target.equals(new THREE.Vector3(0,0,0))) {
         camera.position.copy(INITIAL_CAMERA_POSITION);
         controlsRef.current.target.copy(INITIAL_TARGET_POSITION);
         controlsRef.current.update();
       }
+      
       return () => {
         if (controlsRef.current) {
           controlsRef.current.removeEventListener('start', handleStart);
@@ -77,11 +102,15 @@ export const Experience = () => {
     }
   }, [initialControlsInstance, camera, focus]);
 
-
   const actualFloating = isFloatingActiveOriginal && !focus && !isUserOrbiting;
 
   useFrame((state, delta) => {
-    // Part 1: Calculate music-driven targets (Unchanged)
+    // Update OrbitControls damping
+    if (controlsRef.current && controlsRef.current.enableDamping) {
+      controlsRef.current.update();
+    }
+
+    // Part 1: Calculate music-driven targets (Enhanced)
     let targetMusicZ = 0;
     let targetMusicRotationY = 0;
     let targetMusicPositionY = 0;
@@ -102,7 +131,7 @@ export const Experience = () => {
         for (let i = 0; i < dataArray.current.length; i++) { sum += dataArray.current[i]; }
         const musicIntensity = sum / dataArray.current.length / 255;
 
-        // Music makes the book move slightly towards camera (positive Z offset)
+        // Enhanced music effects
         targetMusicZ = currentBassIntensity * 0.3; 
         targetMusicRotationY = Math.sin(state.clock.elapsedTime * 2) * musicIntensity * 0.05;
         targetMusicPositionY = Math.sin(state.clock.elapsedTime * 3) * currentBassIntensity * 0.02;
@@ -112,83 +141,181 @@ export const Experience = () => {
     bookRotationMusic.current = THREE.MathUtils.lerp(bookRotationMusic.current, targetMusicRotationY, 0.1);
     bookYPositionMusic.current = THREE.MathUtils.lerp(bookYPositionMusic.current, targetMusicPositionY, 0.1);
 
-    // Part 2: Calculate boost-driven Z offset
-    let currentBoostZTarget = 0; // Default to 0 offset (no boost effect)
+    // Part 2: Enhanced boost calculations with Need for Speed physics
+    let currentBoostZTarget = 0;
+    let targetBoostSpeedMultiplier = 1;
+    let targetBoostIntensityMultiplier = 1;
+    
     if (isBoosting) {
         const timeSinceBoost = Date.now() - boostActivationTime;
         if (timeSinceBoost < BOOST_DURATION) {
             const progress = timeSinceBoost / BOOST_DURATION; // 0 to 1
             
-            // Move progressively away from the camera (negative Z)
-            // Using an easeOutCubic function for a smooth acceleration towards the max displacement.
-            // easeOutCubic(t) = 1 - pow(1 - t, 3)
-            const easeOutCubicProgress = 1 - Math.pow(1 - progress, 3);
-            currentBoostZTarget = BOOST_Z_DISPLACEMENT_AWAY * easeOutCubicProgress;
+            // Super fast initial acceleration that gradually slows (Need for Speed curve)
+            const fastStart = Math.exp(-progress * 5); // Very fast initial burst
+            const slowDecay = Math.pow(1 - progress, 1.5); // Gradual slowdown
             
+            // Combine for realistic boost feel
+            const boostCurve = (fastStart * 0.8 + slowDecay * 0.2);
+            
+            // Apply boost effects
+            currentBoostZTarget = BOOST_Z_DISPLACEMENT_AWAY * boostCurve;
+            targetBoostSpeedMultiplier = 1 + (BOOST_MAX_SPEED_MULTIPLIER - 1) * boostCurve;
+            targetBoostIntensityMultiplier = 1 + (BOOST_MAX_INTENSITY_MULTIPLIER - 1) * boostCurve;
+            
+            currentBoostIntensity.current = boostCurve;
         } else {
             setIsBoosting(false); // End boost automatically
-            // currentBoostZTarget will be 0 in the next frame's lerp as isBoosting will be false
+            currentBoostIntensity.current = 0;
         }
     }
     
-    // Lerp boost offset. When isBoosting becomes false, currentBoostZTarget becomes 0 (implicitly in the logic above for the next frame),
-    // so boostZOffset.current will smoothly lerp back to 0, returning the book to its music-driven Z position.
+    // Smooth boost transitions for aesthetic appeal
     boostZOffset.current = THREE.MathUtils.lerp(boostZOffset.current, currentBoostZTarget, 0.15);
+    boostSpeedMultiplier.current = THREE.MathUtils.lerp(boostSpeedMultiplier.current, targetBoostSpeedMultiplier, 0.2);
+    boostIntensityMultiplier.current = THREE.MathUtils.lerp(boostIntensityMultiplier.current, targetBoostIntensityMultiplier, 0.2);
 
     // Part 3: Apply combined transformations to bookGroupRef
     if (bookGroupRef.current) {
-        // The book's final Z position is its music-driven base + the temporary boost offset.
+        // Enhanced Z position with smoother transitions
         bookGroupRef.current.position.z = bookZPositionMusic.current + boostZOffset.current;
-        bookGroupRef.current.rotation.y = bookRotationMusic.current;
-        bookGroupRef.current.position.y = bookYPositionMusic.current;
+        
+        // Enhanced rotation with boost effects
+        const boostRotationExtra = Math.sin(state.clock.elapsedTime * 8) * currentBoostIntensity.current * 0.03;
+        bookGroupRef.current.rotation.y = bookRotationMusic.current + boostRotationExtra;
+        
+        // Enhanced Y position with boost effects
+        const boostYExtra = Math.sin(state.clock.elapsedTime * 6) * currentBoostIntensity.current * 0.08;
+        bookGroupRef.current.position.y = bookYPositionMusic.current + boostYExtra;
     }
   });
   
-  // ... (useEffect for camera focus transitions - unchanged)
   useEffect(() => {
-    const controls = controlsRef.current; if (!controls || !camera) return;
+    const controls = controlsRef.current; 
+    if (!controls || !camera) return;
+    
     if (focus) {
-      if (!previousCameraState.current) { previousCameraState.current = { position: camera.position.clone(), target: controls.target.clone() }; }
+      if (!previousCameraState.current) { 
+        previousCameraState.current = { 
+          position: camera.position.clone(), 
+          target: controls.target.clone() 
+        }; 
+      }
       controls.enabled = false;
-      gsap.to(controls.target, { x:focus.target.x, y:focus.target.y, z:focus.target.z, duration: 0.8, ease: "power2.inOut", onUpdate: () => controls.update() });
-      gsap.to(camera.position, { x:focus.position.x, y:focus.position.y, z:focus.position.z, duration: 0.8, ease: "power2.inOut", onUpdate: () => camera.lookAt(controls.target), onComplete: () => { controls.enabled = true; controls.update(); } });
+      
+      // Smoother focus animations with better easing
+      gsap.to(controls.target, { 
+        x: focus.target.x, 
+        y: focus.target.y, 
+        z: focus.target.z, 
+        duration: 1.2, 
+        ease: "power2.inOut", 
+        onUpdate: () => controls.update() 
+      });
+      
+      gsap.to(camera.position, { 
+        x: focus.position.x, 
+        y: focus.position.y, 
+        z: focus.position.z, 
+        duration: 1.2, 
+        ease: "power2.inOut", 
+        onUpdate: () => camera.lookAt(controls.target), 
+        onComplete: () => { 
+          controls.enabled = true; 
+          controls.update(); 
+        } 
+      });
     } else if (previousCameraState.current) {
       controls.enabled = false;
-      gsap.to(controls.target, { x:previousCameraState.current.target.x, y:previousCameraState.current.target.y, z:previousCameraState.current.target.z, duration: 0.8, ease: "power2.inOut", onUpdate: () => controls.update() });
-      gsap.to(camera.position, { x:previousCameraState.current.position.x, y:previousCameraState.current.position.y, z:previousCameraState.current.position.z, duration: 0.8, ease: "power2.inOut", onUpdate: () => camera.lookAt(controls.target), onComplete: () => { previousCameraState.current = null; controls.enabled = true; controls.update(); } });
+      
+      // Smoother return animations
+      gsap.to(controls.target, { 
+        x: previousCameraState.current.target.x, 
+        y: previousCameraState.current.target.y, 
+        z: previousCameraState.current.target.z, 
+        duration: 1.2, 
+        ease: "power2.inOut", 
+        onUpdate: () => controls.update() 
+      });
+      
+      gsap.to(camera.position, { 
+        x: previousCameraState.current.position.x, 
+        y: previousCameraState.current.position.y, 
+        z: previousCameraState.current.position.z, 
+        duration: 1.2, 
+        ease: "power2.inOut", 
+        onUpdate: () => camera.lookAt(controls.target), 
+        onComplete: () => { 
+          previousCameraState.current = null; 
+          controls.enabled = true; 
+          controls.update(); 
+        } 
+      });
     }
   }, [focus, camera]);
 
-  // ... (useEffect for camera reset - unchanged)
   useEffect(() => {
     if (triggerReset > 0) {
-      const controls = controlsRef.current; if (!controls || !camera) return;
+      const controls = controlsRef.current; 
+      if (!controls || !camera) return;
+      
       setCameraFocus(null);
       const fromPosition = previousCameraState.current ? previousCameraState.current.position : camera.position.clone();
       const fromTarget = previousCameraState.current ? previousCameraState.current.target : controls.target.clone();
       if (previousCameraState.current) previousCameraState.current = null;
+      
       controls.enabled = false;
-      gsap.to(fromTarget, { x:INITIAL_TARGET_POSITION.x, y:INITIAL_TARGET_POSITION.y, z:INITIAL_TARGET_POSITION.z, duration: 1, ease: "power2.inOut", onUpdate: () => { controls.target.copy(fromTarget); controls.update(); } });
-      gsap.to(fromPosition, { x:INITIAL_CAMERA_POSITION.x, y:INITIAL_CAMERA_POSITION.y, z:INITIAL_CAMERA_POSITION.z, duration: 1, ease: "power2.inOut", onUpdate: () => { camera.position.copy(fromPosition); camera.lookAt(controls.target); }, onComplete: () => { controls.target.copy(INITIAL_TARGET_POSITION); camera.position.copy(INITIAL_CAMERA_POSITION); camera.lookAt(controls.target); controls.enabled = true; controls.update(); } });
+      
+      // Much smoother reset animation with better easing and timing
+      gsap.to(fromTarget, { 
+        x: INITIAL_TARGET_POSITION.x, 
+        y: INITIAL_TARGET_POSITION.y, 
+        z: INITIAL_TARGET_POSITION.z, 
+        duration: 1.8, 
+        ease: "power3.inOut", 
+        onUpdate: () => { 
+          controls.target.copy(fromTarget); 
+          controls.update(); 
+        } 
+      });
+      
+      gsap.to(fromPosition, { 
+        x: INITIAL_CAMERA_POSITION.x, 
+        y: INITIAL_CAMERA_POSITION.y, 
+        z: INITIAL_CAMERA_POSITION.z, 
+        duration: 1.8, 
+        ease: "power3.inOut", 
+        onUpdate: () => { 
+          camera.position.copy(fromPosition); 
+          camera.lookAt(controls.target); 
+        }, 
+        onComplete: () => { 
+          controls.target.copy(INITIAL_TARGET_POSITION); 
+          camera.position.copy(INITIAL_CAMERA_POSITION); 
+          camera.lookAt(controls.target); 
+          controls.enabled = true; 
+          controls.update(); 
+        } 
+      });
     }
   }, [triggerReset, camera, setCameraFocus]);
 
-
   const isBookOpenForLines = currentPage > 0 && currentPage < appPages.length;
 
+  // Enhanced floating parameters with boost
   let finalSpeed = actualFloating ? BASE_FLOAT_SPEED : 0;
   let finalFloatIntensity = actualFloating ? BASE_FLOAT_INTENSITY : 0;
   let finalRotationIntensity = actualFloating ? BASE_FLOAT_INTENSITY : 0;
 
-  if (isBoosting) {
-      finalSpeed = Math.max(finalSpeed, BASE_FLOAT_SPEED * 0.3) * 5;
-      finalFloatIntensity = Math.max(finalFloatIntensity, BASE_FLOAT_INTENSITY * 0.3) * 3;
-      finalRotationIntensity = Math.max(finalRotationIntensity, BASE_FLOAT_INTENSITY * 0.3) * 3;
-  }
+  // Apply boost multipliers for smooth enhancement
+  finalSpeed = Math.max(finalSpeed, BASE_FLOAT_SPEED * 0.3) * boostSpeedMultiplier.current;
+  finalFloatIntensity = Math.max(finalFloatIntensity, BASE_FLOAT_INTENSITY * 0.3) * boostIntensityMultiplier.current;
+  finalRotationIntensity = Math.max(finalRotationIntensity, BASE_FLOAT_INTENSITY * 0.3) * boostIntensityMultiplier.current;
 
   return (
     <>
       <AnimatedBackground />
+      <DistantNebula />
       <AudioVisualizer />
       <group ref={bookGroupRef}>
         <Float 
@@ -200,14 +327,54 @@ export const Experience = () => {
           <Book isBookOpen={isBookOpenForLines} isBookFocused={!!focus} />
         </Float>
       </group>
-      <OrbitControls ref={controls => { if (controls) controlsRef.current = controls; }} enablePan={true} minDistance={0.3} maxDistance={8} />
+      <OrbitControls 
+        ref={controls => { if (controls) controlsRef.current = controls; }} 
+        enablePan={true} 
+        minDistance={0.5} 
+        maxDistance={10}
+        maxPolarAngle={Math.PI / 1.8}
+        minPolarAngle={Math.PI / 8}
+        enableDamping={true}
+        dampingFactor={0.05}
+        zoomSpeed={0.8}
+        rotateSpeed={0.6}
+        panSpeed={0.8}
+        screenSpacePanning={false}
+      />
       <Environment preset="sunset" />
-      <directionalLight position={[2, 4, 2]} intensity={1.0} castShadow shadow-mapSize={[2048, 2048]} shadow-bias={-0.0001}/>
-      <ambientLight intensity={0.4} />
-      <mesh position-y={-1.5} rotation-x={-Math.PI / 2} receiveShadow>
-        <planeGeometry args={[100, 100]} />
-        <shadowMaterial transparent opacity={0.1} />
-      </mesh>
+      
+      {/* Enhanced lighting for better book visibility */}
+      <directionalLight 
+        position={[2, 4, 2]} 
+        intensity={1.2} 
+        castShadow 
+        shadow-mapSize={[2048, 2048]} 
+        shadow-bias={-0.0001}
+        shadow-camera-far={50}
+        shadow-camera-left={-10}
+        shadow-camera-right={10}
+        shadow-camera-top={10}
+        shadow-camera-bottom={-10}
+      />
+      
+      {/* Brighter ambient light for space setting */}
+      <ambientLight intensity={0.6} />
+      
+      {/* Additional fill lighting for the book */}
+      <directionalLight 
+        position={[-2, 2, 3]} 
+        intensity={0.8} 
+        color="#ffffff"
+      />
+      
+      {/* Rim lighting for depth - brighter */}
+      <directionalLight 
+        position={[-2, 2, -2]} 
+        intensity={0.4} 
+        color="#4a2a66"
+      />
+      
+      {/* Removed shadow plane - we're in space! No ground shadows needed */}
     </>
   );
 };

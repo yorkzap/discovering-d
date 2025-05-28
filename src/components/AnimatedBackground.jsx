@@ -1,14 +1,12 @@
 // src/components/AnimatedBackground.jsx
 
 import { useFrame, extend } from '@react-three/fiber';
-import { useAtom, useSetAtom } from 'jotai'; // Added useSetAtom
+import { useAtom, useSetAtom } from 'jotai';
 import { useRef } from 'react';
 import * as THREE from 'three';
 import { shaderMaterial } from '@react-three/drei';
-// Make sure to import the new atoms and isMusicPlayingAtom from the correct central atoms file
 import { isMusicPlayingAtom, isBoostingAtom, boostActivationTimeAtom } from './atoms';
 
-// ... (simplexNoise3D and shader definition remain the same)
 const simplexNoise3D = `
   vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
   vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -81,24 +79,29 @@ const BackgroundMaterial = shaderMaterial(
   {
     uTime: 0,
     uMusicPlaying: 0.0,
+    uBoostIntensity: 0.0,
     uColor1: new THREE.Color(0x0a0a23),
     uColor2: new THREE.Color(0x1f1f3d),
     uColor3: new THREE.Color(0x4a2a66),
   },
   `
     varying vec3 vPosition;
+    varying vec2 vUv;
     void main() {
       vPosition = position;
+      vUv = uv;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
   `,
   `
     uniform float uTime;
     uniform float uMusicPlaying; 
+    uniform float uBoostIntensity;
     uniform vec3 uColor1;
     uniform vec3 uColor2;
     uniform vec3 uColor3;
     varying vec3 vPosition;
+    varying vec2 vUv;
 
     ${simplexNoise3D} 
 
@@ -114,18 +117,94 @@ const BackgroundMaterial = shaderMaterial(
         return sum;
     }
 
+    // Galaxy cloud streaks for boost effect
+    float galaxyStreaks(vec2 uv, float intensity) {
+        vec2 center = vec2(0.5, 0.5);
+        float dist = distance(uv, center);
+        
+        // Create subtle radial streaks that emerge from center
+        float angle = atan(uv.y - center.y, uv.x - center.x);
+        float streaks = sin(angle * 10.0 + uTime * 6.0 * intensity) * 0.25 + 0.75;
+        
+        // Add flowing motion like galaxy arms - slower and more graceful
+        float flow = sin(dist * 12.0 - uTime * 8.0 * intensity + angle * 2.5) * 0.15 + 0.85;
+        
+        // Combine with distance falloff for natural look
+        float fadeOut = smoothstep(0.8, 0.2, dist);
+        
+        return (streaks * flow - 1.0) * intensity * fadeOut * 0.3;
+    }
+
+    // Gaussian blur effect at edges for speed sensation
+    float speedBlur(vec2 uv, float intensity) {
+        vec2 center = vec2(0.5, 0.5);
+        float dist = distance(uv, center);
+        
+        // Create motion blur effect radiating outward
+        float blur = smoothstep(0.3, 1.0, dist) * intensity;
+        
+        // Add some directional streaking
+        float radialBlur = abs(sin(atan(uv.y - center.y, uv.x - center.x) * 4.0)) * blur * 0.3;
+        
+        return blur + radialBlur;
+    }
+
     void main() {
       vec3 normalizedPos = normalize(vPosition); 
-      float timeSpeedFactor = 0.3 + uMusicPlaying * 0.7;
-      float noiseLayer1 = fbm(normalizedPos * 1.5, timeSpeedFactor * 0.5);
-      float noiseLayer2 = fbm(normalizedPos * 3.0 + 0.5, timeSpeedFactor * 1.0);
-      float combinedNoise = smoothstep(-0.2, 0.2, noiseLayer1) * 0.7 + smoothstep(-0.1, 0.1, noiseLayer2) * 0.3;
-      vec3 color = mix(uColor1, uColor2, smoothstep(-1.0, 1.0, normalizedPos.y * 0.8 + 0.2)); 
+      
+      // Enhanced time speed with boost
+      float baseTimeSpeed = 0.3 + uMusicPlaying * 0.7;
+      float boostTimeSpeed = baseTimeSpeed + uBoostIntensity * 4.0; // More subtle speed increase
+      
+      // Enhanced noise layers with galaxy cloud feeling
+      float cloudScale1 = 1.5 + uBoostIntensity * 1.0; // Subtle scale changes
+      float cloudScale2 = 3.0 + uBoostIntensity * 1.5;
+      
+      float noiseLayer1 = fbm(normalizedPos * cloudScale1, boostTimeSpeed * 0.5);
+      float noiseLayer2 = fbm(normalizedPos * cloudScale2 + 0.5, boostTimeSpeed * 1.0);
+      
+      // Add wispy galaxy cloud layer with more pleasant motion
+      float galaxyWisps = fbm(normalizedPos * 0.7 + vec3(uTime * 0.03), 1.0) * 0.25;
+      
+      float combinedNoise = smoothstep(-0.2, 0.2, noiseLayer1) * 0.7 + 
+                           smoothstep(-0.1, 0.1, noiseLayer2) * 0.3 +
+                           galaxyWisps * 0.2;
+      
+      // Base color - keep existing beautiful scheme
+      vec3 baseColor = mix(uColor1, uColor2, smoothstep(-1.0, 1.0, normalizedPos.y * 0.8 + 0.2)); 
       float musicIntensity = uMusicPlaying * 0.5 + 0.1; 
-      color = mix(color, uColor3, combinedNoise * musicIntensity * 1.5);
-      color += uMusicPlaying * (sin(uTime * 2.5) * 0.01 + 0.01);
-      color = clamp(color, 0.0, 1.0);
-      gl_FragColor = vec4(color, 1.0);
+      baseColor = mix(baseColor, uColor3, combinedNoise * musicIntensity * 1.5);
+      
+      // Subtle music pulse with smoother timing
+      baseColor += uMusicPlaying * (sin(uTime * 1.8) * 0.008 + 0.008);
+      
+      // Add galaxy streaks during boost (very subtle)
+      float streakEffect = galaxyStreaks(vUv, uBoostIntensity);
+      
+      // Speed blur effect
+      float blurEffect = speedBlur(vUv, uBoostIntensity);
+      
+      // Apply boost effects while maintaining color scheme
+      vec3 boostColor = uColor3 * 1.2; // Slightly more subtle brightness boost
+      vec3 finalColor = baseColor;
+      
+      // Add galaxy streaks as brightness variation in existing colors
+      finalColor += baseColor * streakEffect;
+      
+      // Apply gaussian blur dimming at edges for speed effect - more subtle
+      finalColor *= (1.0 - blurEffect * 0.5);
+      
+      // Subtle boost glow in center during boost with breathing effect
+      vec2 center = vec2(0.5, 0.5);
+      float centerDist = distance(vUv, center);
+      float breathe = sin(uTime * 3.0) * 0.1 + 0.9; // Gentle breathing
+      float centerGlow = (1.0 - smoothstep(0.0, 0.6, centerDist)) * uBoostIntensity * 0.25 * breathe;
+      finalColor += boostColor * centerGlow;
+      
+      // Ensure color bounds
+      finalColor = clamp(finalColor, 0.0, 1.0);
+      
+      gl_FragColor = vec4(finalColor, 1.0);
     }
   `
 );
@@ -134,28 +213,59 @@ extend({ BackgroundMaterial });
 
 export const AnimatedBackground = () => {
   const materialRef = useRef();
-  const [isMusicPlayingValue] = useAtom(isMusicPlayingAtom); // Renamed to avoid conflict
-
-  // Atoms for boost
+  const [isMusicPlayingValue] = useAtom(isMusicPlayingAtom);
+  const [isBoosting] = useAtom(isBoostingAtom);
+  const [boostActivationTime] = useAtom(boostActivationTimeAtom);
   const setIsBoosting = useSetAtom(isBoostingAtom);
   const setBoostActivationTime = useSetAtom(boostActivationTimeAtom);
+
+  // Boost parameters - keeping your addictive curve
+  const BOOST_DURATION = 2000;
+  const currentBoostIntensity = useRef(0);
 
   useFrame((state, delta) => {
     if (materialRef.current) {
       materialRef.current.uTime += delta;
+      
+      // Smooth music transition
       materialRef.current.uMusicPlaying = THREE.MathUtils.lerp(
         materialRef.current.uMusicPlaying,
         isMusicPlayingValue ? 1.0 : 0.0,
         0.05
       );
+
+      // Your addictive boost curve - Fast start (80%) + gradual decay (20%)
+      let targetBoostIntensity = 0;
+      if (isBoosting) {
+        const timeSinceBoost = Date.now() - boostActivationTime;
+        if (timeSinceBoost < BOOST_DURATION) {
+          const progress = timeSinceBoost / BOOST_DURATION;
+          
+          // Super fast initial pickup that gradually slows down
+          const fastStart = Math.exp(-progress * 5); // Fast initial acceleration
+          const slowEnd = Math.pow(1 - progress, 1.5); // Gradual decay
+          
+          // Your addictive formula: 80% fast start + 20% gradual decay
+          targetBoostIntensity = (fastStart * 0.8 + slowEnd * 0.2);
+        } else {
+          setIsBoosting(false);
+        }
+      }
+      
+      // Smooth transitions for aesthetic appeal
+      currentBoostIntensity.current = THREE.MathUtils.lerp(
+        currentBoostIntensity.current,
+        targetBoostIntensity,
+        isBoosting ? 0.25 : 0.15
+      );
+      
+      materialRef.current.uBoostIntensity = currentBoostIntensity.current;
     }
   });
 
   const handleBackgroundClick = (event) => {
-    // Important: stop propagation if this click should not be handled by deeper elements
-    // For now, we assume clicks on background are meant for boost if not on other UI
     event.stopPropagation(); 
-    console.log("Background clicked, initiating boost!");
+    console.log("Galaxy boost initiated!");
     setIsBoosting(true);
     setBoostActivationTime(Date.now());
   };
@@ -164,7 +274,7 @@ export const AnimatedBackground = () => {
     <mesh 
       scale={[150, 150, 150]} 
       frustumCulled={false}
-      onClick={handleBackgroundClick} // Added onClick handler
+      onClick={handleBackgroundClick}
     >
       <sphereGeometry args={[1, 64, 32]} />
       {/* @ts-ignore */}

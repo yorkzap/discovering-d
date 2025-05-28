@@ -9,14 +9,15 @@ import {
   MeshStandardMaterial, Skeleton, SkinnedMesh, SRGBColorSpace,
   Uint16BufferAttribute, Vector3, Matrix3
 } from "three";
-// REMOVED: import { degToRad } from "three/src/math/Utils.js"; // No longer needed
 import { pageAtom, pages as appPages, bookFloatingAtom } from "./UI";
 import { 
   cameraFocusAtom, 
   isMusicPlayingAtom,
   showInitialFlightEffectAtom,
   hasInitialFlightOccurredAtom,
-  isBoostingAtom 
+  isBoostingAtom,
+  boostActivationTimeAtom,
+  audioAnalyserAtom
 } from "./atoms";
 import { InitialFlightLines } from "./InitialFlightLines";
 
@@ -33,15 +34,14 @@ const PAGE_DEPTH = 0.003;
 const PAGE_SEGMENTS = 30;
 const SEGMENT_WIDTH = PAGE_WIDTH / PAGE_SEGMENTS;
 
-// --- Eagle-like Flight Constants ---
-const BOOST_FLAP_FREQUENCY = 1.0; // Slower, more powerful flaps (e.g., 1 full flap per second)
-const BOOST_FLAP_MAX_ANGLE_OFFSET = MathUtils.degToRad(60); // How far each "wing" moves from its resting state
-// Easing for a more powerful, less "fluttery" feel. Larger values mean slower to reach target (smoother)
-const BOOST_FLAP_Y_EASING = 0.25; // Slower Y-axis response for a weighty flap
-const BOOST_FLAP_X_EASING = 0.3;  // Slower X-axis response for curl during flap
+// Enhanced Eagle-like Flight Constants for better aesthetics
+const BOOST_FLAP_FREQUENCY = 1.2; // Slightly faster for more dynamic feel
+const BOOST_FLAP_MAX_ANGLE_OFFSET = MathUtils.degToRad(80); // More dramatic
+const BOOST_FLAP_Y_EASING = 0.18; // Faster response for smoother feel
+const BOOST_FLAP_X_EASING = 0.22; // Balanced curl response
+const BOOST_DURATION = 2000;
 
 // Geometry and Skinning
-// ... (unchanged)
 const pageGeometry = new BoxGeometry(PAGE_WIDTH, PAGE_HEIGHT, PAGE_DEPTH, PAGE_SEGMENTS, 2);
 pageGeometry.translate(PAGE_WIDTH / 2, 0, 0);
 const position = pageGeometry.attributes.position;
@@ -79,9 +79,7 @@ appPages.forEach((p) => {
 });
 useTexture.preload(`/textures/book-cover-roughness.jpg`);
 
-
 const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
-  // ... (texture loading, refs, state, materials, skinnedMesh - unchanged)
   const textures = useTexture([
     `/textures/${front}.jpg`, `/textures/${back}.jpg`,
     front === "book-cover" ? `/textures/book-cover-roughness.jpg` : `/textures/${front}_roughness.jpg`,
@@ -113,6 +111,14 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
   const [hoverRegion, setHoverRegion] = useState('none');
 
   const [isBoosting] = useAtom(isBoostingAtom);
+  const [boostActivationTime] = useAtom(boostActivationTimeAtom);
+  const [analyser] = useAtom(audioAnalyserAtom);
+  const [isMusicPlaying] = useAtom(isMusicPlayingAtom);
+  
+  // Enhanced tracking for smooth effects
+  const currentBoostIntensity = useRef(0);
+  const musicIntensity = useRef(0);
+  const dataArray = useRef(null);
 
   useEffect(() => {
     if (hoverRegion === 'zoom') document.body.style.cursor = 'zoom-in';
@@ -161,15 +167,20 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
   const setShowFlightEffect = useSetAtom(showInitialFlightEffectAtom);
   const [hasFlightOccurred, setHasFlightOccurred] = useAtom(hasInitialFlightOccurredAtom);
 
-  useFrame(() => { // Emissive hover effect
+  // Enhanced emissive hover effect with very subtle music glow
+  useFrame(() => {
     if (!skinnedMeshRef.current?.material[4] || !skinnedMeshRef.current?.material[5]) return;
     let targetEmissiveColor = emissiveColorBase; 
-    let targetEmissiveIntensity = 0;
+    let targetEmissiveIntensity = musicIntensity.current * 0.008; // Reduced from 0.015
+    
     if (hoverRegion === 'zoom') { 
-      targetEmissiveColor = emissiveColorZoomHover; targetEmissiveIntensity = 0.08; 
+      targetEmissiveColor = emissiveColorZoomHover; 
+      targetEmissiveIntensity = 0.08 + musicIntensity.current * 0.01; // Reduced from 0.02
     } else if (hoverRegion === 'turn') { 
-      targetEmissiveColor = emissiveColorTurnHover; targetEmissiveIntensity = 0.08; 
+      targetEmissiveColor = emissiveColorTurnHover; 
+      targetEmissiveIntensity = 0.08 + musicIntensity.current * 0.01; // Reduced from 0.02
     }
+    
     for (let i = 4; i <= 5; i++) { 
       const mat = skinnedMeshRef.current.material[i];
       mat.emissive.lerp(targetEmissiveColor, 0.2);
@@ -183,11 +194,53 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
     const bones = skinnedMeshRef.current.skeleton.bones;
     const time = state.clock.elapsedTime;
 
-    let tTime_turn; // For standard page turn animation progress (0 to 1)
-    let baseTRot; // Base target Y rotation for the page
+    // Enhanced music analysis
+    let currentMusicIntensity = 0;
+    if (isMusicPlaying && analyser) {
+      if (!dataArray.current) {
+        dataArray.current = new Uint8Array(analyser.frequencyBinCount);
+      }
+      
+      analyser.getByteFrequencyData(dataArray.current);
+      let sum = 0;
+      for (let i = 0; i < dataArray.current.length; i++) {
+        sum += dataArray.current[i];
+      }
+      currentMusicIntensity = sum / dataArray.current.length / 255;
+    }
+    
+    // Smooth music intensity with threshold to prevent noise
+    musicIntensity.current = MathUtils.lerp(musicIntensity.current, currentMusicIntensity, 0.08);
+    
+    // Apply smoothing threshold to prevent micro-movements from noise
+    if (musicIntensity.current < 0.12) {
+        musicIntensity.current = 0;
+    }
+
+    // Calculate boost intensity with addictive curve
+    let targetBoostIntensity = 0;
+    if (isBoosting) {
+        const timeSinceBoost = Date.now() - boostActivationTime;
+        if (timeSinceBoost < BOOST_DURATION) {
+            const progress = timeSinceBoost / BOOST_DURATION;
+            // Fast start (80%) + gradual decay (20%) = addictive boost feel
+            const fastStart = Math.exp(-progress * 5);
+            const slowDecay = Math.pow(1 - progress, 1.5);
+            targetBoostIntensity = (fastStart * 0.8 + slowDecay * 0.2);
+        }
+    }
+    
+    currentBoostIntensity.current = MathUtils.lerp(
+        currentBoostIntensity.current,
+        targetBoostIntensity,
+        isBoosting ? 0.25 : 0.15
+    );
+
+    let tTime_turn;
+    let baseTRot;
     let currentEasingFactorY = easingFactor;
     let currentEasingFactorX = easingFactorFold;
-    let turnProgressForCurl = 0; // Drives the curl amount (0 to 1)
+    let turnProgressForCurl = 0;
 
     if (lastOpened.current !== opened && !isBoosting) { 
         turnedAt.current = +new Date();
@@ -195,40 +248,50 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
     }
     tTime_turn = Math.min(400, new Date() - turnedAt.current) / 400;
     tTime_turn = Math.sin(tTime_turn * Math.PI); 
-    turnProgressForCurl = tTime_turn; // Default curl driven by page turn
+    turnProgressForCurl = tTime_turn;
 
     baseTRot = opened ? -Math.PI / 2 : Math.PI / 2;
     if (!bookClosed) baseTRot += MathUtils.degToRad(number * 0.8);
 
-
-    if (isBoosting) {
+    // Enhanced boost effects
+    if (isBoosting || currentBoostIntensity.current > 0.01) {
         currentEasingFactorY = BOOST_FLAP_Y_EASING;
         currentEasingFactorX = BOOST_FLAP_X_EASING;
 
-        // Flap cycle: 0 (up/open) -> 1 (down/closed) -> 0 (up/open)
-        // Using a simple sine wave for smoother start/end of stroke, and natural pause at extremes.
-        // (Math.sin(...) + 1) / 2 maps a -1 to 1 sine wave to a 0 to 1 range.
-        const flapCycleRaw = Math.sin(time * Math.PI * BOOST_FLAP_FREQUENCY); // -1 to 1
-        const flapCycleEased = (flapCycleRaw + 1) / 2; // 0 (top) to 1 (bottom) to 0 (top)
-
-        // Use a power function to make the "downstroke" (flapCycleEased approaching 1) faster/more powerful
-        // and the "upstroke" (flapCycleEased approaching 0) a bit slower.
-        // A power < 1 emphasizes start/end, > 1 emphasizes middle.
-        // Let's try a simple approach first, then refine if needed.
-        // For now, flapCycleEased is fine for driving the angle.
+        // Enhanced flap animation with better aesthetics
+        const flapFreq = BOOST_FLAP_FREQUENCY + musicIntensity.current * 0.3;
+        const flapCycleRaw = Math.sin(time * Math.PI * flapFreq);
         
-        let flapOffset = flapCycleEased * BOOST_FLAP_MAX_ANGLE_OFFSET;
+        // More aesthetic easing - powerful downstroke, graceful upstroke
+        const easedFlap = flapCycleRaw > 0 ? 
+            Math.pow(flapCycleRaw, 0.7) : 
+            -Math.pow(-flapCycleRaw, 1.2);
         
-        // Adjust curl intensity during flap - perhaps less curl for a stiffer wing
-        turnProgressForCurl = flapCycleEased * 0.5; // Example: Max 50% of normal curl during flap
+        const flapCycleEased = (easedFlap + 1) / 2;
+        
+        let flapOffset = flapCycleEased * BOOST_FLAP_MAX_ANGLE_OFFSET * currentBoostIntensity.current;
+        
+        // Enhanced curl with music reactivity - with bounds
+        turnProgressForCurl = Math.max(
+            turnProgressForCurl, 
+            flapCycleEased * 0.5 * currentBoostIntensity.current // Reduced from 0.6 to 0.5
+        );
+        
+        // Clamp curl progress to prevent over-bending
+        turnProgressForCurl = MathUtils.clamp(turnProgressForCurl, 0, 1);
 
         if (opened) { 
             baseTRot += flapOffset; 
         } else { 
             baseTRot -= flapOffset; 
         }
+    } else if (isMusicPlaying && musicIntensity.current > 0.15) {
+        // Much more subtle music flutter when not boosting
+        const musicFlutter = Math.sin(time * 2.0 + number * 1.2) * musicIntensity.current;
+        baseTRot += musicFlutter * MathUtils.degToRad(1.5); // Reduced from 3 to 1.5
+        
+        turnProgressForCurl += musicIntensity.current * 0.03; // Reduced from 0.08 to 0.03
     }
-
 
     for (let i = 0; i < bones.length; i++) {
         const targetBone = i === 0 ? group.current : bones[i]; 
@@ -236,7 +299,6 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
 
         const inCrvI = i < 8 ? Math.sin(i * 0.2 + 0.25) : 0;
         const outCrvI = i >= 8 ? Math.cos(i * 0.3 + 0.09) : 0;
-        // `turnProgressForCurl` drives the page bend strength
         const turnI = Math.sin(i * Math.PI * (1 / bones.length)) * turnProgressForCurl; 
         
         let targetRotY = insideCurveStrength * inCrvI * baseTRot - 
@@ -244,6 +306,16 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
                        turningCurveStrength * turnI * baseTRot;
 
         let targetRotX_Fold = MathUtils.degToRad(Math.sign(baseTRot) * 2); 
+
+        // Add very subtle music micro-movements with bounds
+        if (isMusicPlaying && musicIntensity.current > 0.15) {
+            const microMovement = Math.sin(time * 4.0 + i * 0.6) * musicIntensity.current * 0.008; // Reduced from 0.015
+            targetRotY += microMovement;
+        }
+
+        // Clamp rotations to prevent extreme distortions
+        targetRotY = MathUtils.clamp(targetRotY, -Math.PI, Math.PI);
+        targetRotX_Fold = MathUtils.clamp(targetRotX_Fold, -MathUtils.degToRad(15), MathUtils.degToRad(15));
 
         if (bookClosed) {
             if (i === 0) { targetRotY = baseTRot; targetRotX_Fold = 0; } 
@@ -257,7 +329,6 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
     }
   });
 
-  // ... (handlePagePointerMove, handlePagePointerOut, handlePageClick - unchanged)
   const handlePagePointerMove = (event) => { 
     event.stopPropagation();
     if (event.uv && event.object.geometry) {
@@ -269,6 +340,7 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
       setHoverRegion('turn'); 
     }
   };
+  
   const handlePagePointerOut = (event) => { 
     event.stopPropagation(); 
     setHoverRegion('none'); 
@@ -326,7 +398,6 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
     setHoverRegion('none');
   };
 
-
   return (
     <group {...props} ref={group}>
       <primitive 
@@ -341,7 +412,6 @@ const Page = ({ number, front, back, page, opened, bookClosed, ...props }) => {
   );
 };
 
-// ... (Book component wrapping Page components - unchanged)
 export const Book = ({ ...props }) => {
   const [pageVal] = useAtom(pageAtom); 
   const [delayedPage, setDelayedPage] = useState(pageVal);
