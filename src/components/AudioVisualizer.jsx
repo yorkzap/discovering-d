@@ -1,3 +1,4 @@
+// src/components/AudioVisualizer.jsx
 import { useFrame } from '@react-three/fiber';
 import { useAtom } from 'jotai';
 import { useMemo, useRef } from 'react';
