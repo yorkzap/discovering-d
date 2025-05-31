@@ -7,15 +7,13 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry';
 import { shaderMaterial } from '@react-three/drei';
 import { computeFaceCentroid, fibSpherePoint, separateFaces } from './textAnimationUtils';
 
+// --- Shaders (Keep the versions from the previous response that correctly form text) ---
 const vertexShader = `
   uniform float uProgress;
   uniform float uAnimationDuration;
-  uniform float uTravelDistance;
-
   attribute vec2 aAnimationData;
-  attribute vec3 aTravelDirection;
+  attribute vec3 aExplodedPosition;
   attribute vec4 aAxisAngle;
-
   varying float vFaceProgress;
 
   float easeOutCubic(float t) { return 1.0 - pow(1.0 - t, 3.0); }
@@ -32,15 +30,12 @@ const vertexShader = `
     float faceProgress = tDuration > 0.0001 ? easeOutCubic(faceTime / tDuration) : 0.0;
     vFaceProgress = faceProgress;
 
-    vec3 scaledVertex = position * faceProgress; // 'position' is the formed position
-
-    float currentAngle = aAxisAngle.w * (1.0 - faceProgress);
+    vec3 formedPosition = position;
+    vec3 explodedPos = aExplodedPosition; 
+    vec3 mixedPosition = mix(explodedPos, formedPosition, faceProgress);
+    float currentAngle = aAxisAngle.w * (1.0 - faceProgress); 
     vec4 tQuat = quatFromAxisAngle(aAxisAngle.xyz, currentAngle);
-    vec3 rotatedVertex = rotateVector(tQuat, scaledVertex);
-
-    vec3 travelOffset = aTravelDirection * uTravelDistance * (1.0 - faceProgress);
-    vec3 transformed = rotatedVertex + travelOffset;
-
+    vec3 transformed = rotateVector(tQuat, mixedPosition);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
   }
 `;
@@ -55,7 +50,6 @@ const fragmentShader = `
     float faceAlpha = smoothstep(0.0, 0.35, vFaceProgress);
     vec3 finalColor = uBaseColor + uEmissiveColor * (faceAlpha * 0.7 + 0.1);
     float finalOpacity = faceAlpha * uOpacity;
-
     if (finalOpacity < 0.01) discard;
     gl_FragColor = vec4(finalColor, finalOpacity);
   }
@@ -63,20 +57,14 @@ const fragmentShader = `
 
 const AnimatedTextMaterialConstructor = shaderMaterial(
   {
-    uProgress: 0.0,
-    uAnimationDuration: 1.0,
-    uTravelDistance: 1.0,
-    uBaseColor: new THREE.Color("#cccccc"),
-    uEmissiveColor: new THREE.Color("#6688ff"),
+    uProgress: 0.0, uAnimationDuration: 1.0,
+    uBaseColor: new THREE.Color("#cccccc"), uEmissiveColor: new THREE.Color("#6688ff"),
     uOpacity: 0.0,
   },
-  vertexShader,
-  fragmentShader,
+  vertexShader, fragmentShader,
   (material) => { 
-    material.transparent = true;
-    material.side = THREE.DoubleSide;
-    material.depthWrite = false;
-    material.blending = THREE.AdditiveBlending;
+    material.transparent = true; material.side = THREE.DoubleSide;
+    material.depthWrite = false; material.blending = THREE.AdditiveBlending;
   }
 );
 
@@ -90,13 +78,18 @@ export const AnimatedBasText = ({
   visible,
   initialDelay = 0,
   textParams = {
-    size: 0.15, depth: 0.02, curveSegments: 3, bevelEnabled: false,
+    size: 0.09, // ADJUSTED: Smaller default size
+    depth: 0.015, // ADJUSTED: Slightly thinner
+    curveSegments: 3,
+    bevelEnabled: false,
   },
   animationParams = {
-    minDuration: 1.0, maxDuration: 1.6, stretch: 0.2,
-    lengthFactor: 0.03, 
-    travelDistance: 0.7, // This will be used for uTravelDistance
-    rotationFactor: Math.PI * 1.8,
+    minDuration: 0.7, // ADJUSTED: Faster individual particle animation
+    maxDuration: 1.1, // ADJUSTED: Faster individual particle animation
+    stretch: 0.1,   // ADJUSTED: Less stretch for faster feel
+    lengthFactor: 0.035, 
+    explodeSphereRadius: 0.35, // ADJUSTED: Smaller explosion radius
+    rotationFactor: Math.PI * 1.5,
   },
   baseColor = "#ddeeff",
   emissiveColor = "#88aaff",
@@ -123,11 +116,10 @@ export const AnimatedBasText = ({
 
     let geom = new TextGeometry(currentText, currentTextParams);
     geom.computeBoundingBox();
-    const size = new THREE.Vector3();
-    geom.boundingBox.getSize(size);
-    geom.translate(-size.x / 2, -size.y / 2, -size.z / 2); // geom.attributes.position now holds centered, formed positions
-
-    let separatedGeom = separateFaces(geom); // Duplicates vertices for per-face attributes
+    const sizeVec = new THREE.Vector3(); // Renamed to avoid conflict with textParams.size
+    geom.boundingBox.getSize(sizeVec);
+    geom.translate(-sizeVec.x / 2, -sizeVec.y / 2, -sizeVec.z / 2);
+    let separatedGeom = separateFaces(geom);
     geom.dispose();
 
     if (!separatedGeom || !separatedGeom.attributes.position || separatedGeom.attributes.position.count === 0) {
@@ -135,53 +127,41 @@ export const AnimatedBasText = ({
       return null;
     }
 
-    const posAttr = separatedGeom.attributes.position; // These are the formed vertex positions
+    const posAttr = separatedGeom.attributes.position;
     const numVertices = posAttr.count;
     const numFaces = numVertices / 3;
-
     const aAnimationData = new Float32Array(numVertices * 2);
-    const aTravelDirection = new Float32Array(numVertices * 3);
+    const aExplodedPosition = new Float32Array(numVertices * 3);
     const aAxisAngle = new Float32Array(numVertices * 4);
-    
     let maxCalculatedOverallDuration = 0;
     const tempBoundingBox = new THREE.Box3().setFromBufferAttribute(posAttr);
     const geomCenter = new THREE.Vector3(); 
-    tempBoundingBox.getCenter(geomCenter); // Should be close to (0,0,0) due to earlier translate
+    tempBoundingBox.getCenter(geomCenter);
     const geomMaxLength = tempBoundingBox.max.distanceTo(geomCenter) || 1.0;
 
     for (let i = 0; i < numFaces; i++) {
       const vA_orig = new THREE.Vector3().fromBufferAttribute(posAttr, i * 3 + 0);
       const vB_orig = new THREE.Vector3().fromBufferAttribute(posAttr, i * 3 + 1);
       const vC_orig = new THREE.Vector3().fromBufferAttribute(posAttr, i * 3 + 2);
-      const faceCentroid_orig = new THREE.Vector3().add(vA_orig).add(vB_orig).add(vC_orig).divideScalar(3);
-
-      const delay = (geomMaxLength - faceCentroid_orig.length()) * animationParams.lengthFactor + Math.random() * animationParams.stretch;
+      const faceCentroid_formed = new THREE.Vector3().add(vA_orig).add(vB_orig).add(vC_orig).divideScalar(3);
+      const delay = (geomMaxLength - faceCentroid_formed.length()) * animationParams.lengthFactor + Math.random() * animationParams.stretch;
       const duration = THREE.MathUtils.randFloat(animationParams.minDuration, animationParams.maxDuration);
       maxCalculatedOverallDuration = Math.max(maxCalculatedOverallDuration, delay + duration);
-      
-      let travelDir = faceCentroid_orig.clone().sub(geomCenter).normalize();
-      if (travelDir.lengthSq() < 0.0001) { // If centroid is at origin, pick random dir
-        travelDir.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
-      }
-
+      const targetExplodedPosForFace = fibSpherePoint(i, numFaces, animationParams.explodeSphereRadius);
       const axis = new THREE.Vector3(Math.random()*2-1, Math.random()*2-1, Math.random()*2-1).normalize();
       const angle = (Math.random() * 2.0 - 1.0) * animationParams.rotationFactor;
-
       for (let j = 0; j < 3; j++) {
         const vertIndex = i * 3 + j;
         aAnimationData[vertIndex * 2 + 0] = Math.max(0, delay);
         aAnimationData[vertIndex * 2 + 1] = duration;
-        aTravelDirection.set([travelDir.x, travelDir.y, travelDir.z], vertIndex * 3);
+        aExplodedPosition.set([targetExplodedPosForFace.x, targetExplodedPosForFace.y, targetExplodedPosForFace.z], vertIndex * 3);
         aAxisAngle.set([axis.x, axis.y, axis.z, angle], vertIndex * 4);
       }
     }
     perFaceAnimationDurationRef.current = Math.max(0.1, maxCalculatedOverallDuration);
-
     separatedGeom.setAttribute('aAnimationData', new THREE.BufferAttribute(aAnimationData, 2));
-    separatedGeom.setAttribute('aTravelDirection', new THREE.BufferAttribute(aTravelDirection, 3));
+    separatedGeom.setAttribute('aExplodedPosition', new THREE.BufferAttribute(aExplodedPosition, 3));
     separatedGeom.setAttribute('aAxisAngle', new THREE.BufferAttribute(aAxisAngle, 4));
-    // The 'position' attribute of separatedGeom is already the formed position.
-    
     setIsGeometryReady(true);
     return separatedGeom;
   }, [font, currentText, textParams, animationParams]);
@@ -215,7 +195,8 @@ export const AnimatedBasText = ({
     if (!materialRef.current || !meshRef.current || !textMeshGeometry || !isGeometryReady) return;
 
     const targetOverallProgress = visible && canStartAnimation ? 1.0 : 0.0;
-    const LERP_SPEED_OVERALL = targetOverallProgress === 1.0 ? 0.7 : 1.8;
+    // ADJUSTED: Faster LERP for forming, slightly faster for exploding too
+    const LERP_SPEED_OVERALL = targetOverallProgress === 1.0 ? 1.5 : 2.2; 
     
     const currentOverallProgress = materialRef.current.uProgress;
     let newOverallProgress = THREE.MathUtils.lerp(
@@ -231,9 +212,8 @@ export const AnimatedBasText = ({
         materialRef.current.uOpacity = newOverallProgress; 
     }
     materialRef.current.uAnimationDuration = perFaceAnimationDurationRef.current;
-    materialRef.current.uTravelDistance = animationParams.travelDistance || 1.0;
 
-    if (targetPosition) meshRef.current.position.lerp(new THREE.Vector3(...targetPosition), 3.0 * delta);
+    if (targetPosition) meshRef.current.position.lerp(new THREE.Vector3(...targetPosition), 3.5 * delta); // Slightly faster position lerp
 
     if (onAnimationComplete && canStartAnimation) {
       const progress = materialRef.current.uProgress;
