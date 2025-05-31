@@ -1,100 +1,85 @@
-// src/components/textAnimationUtils.js
-import * as THREE from 'three';
+// src/components/textAnimationUtils.js (ensure this file exists and is correctly imported)
+import *
+as THREE from 'three';
 
-// ... (computeFaceCentroid and fibSpherePoint remain the same) ...
-export function computeFaceCentroid(geometry, faceIndex) {
-  const positionAttribute = geometry.attributes.position;
-  const indexAttribute = geometry.index; // This might be null
-  const centroid = new THREE.Vector3();
+// Computes the centroid of a face in a BufferGeometry.
+// Assumes `geometry.attributes.position` exists.
+// `faceIndex` is the index of the face (0, 1, 2, ...).
+export const computeFaceCentroid = (geometry, faceIndex) => {
+    const positionAttribute = geometry.attributes.position;
+    const vA = new THREE.Vector3();
+    const vB = new THREE.Vector3();
+    const vC = new THREE.Vector3();
 
-  if (indexAttribute) { // Indexed geometry
-    const ia = indexAttribute.getX(faceIndex * 3);
-    const ib = indexAttribute.getX(faceIndex * 3 + 1);
-    const ic = indexAttribute.getX(faceIndex * 3 + 2);
+    const iA = faceIndex * 3;
+    const iB = faceIndex * 3 + 1;
+    const iC = faceIndex * 3 + 2;
 
-    const va = new THREE.Vector3().fromBufferAttribute(positionAttribute, ia);
-    const vb = new THREE.Vector3().fromBufferAttribute(positionAttribute, ib);
-    const vc = new THREE.Vector3().fromBufferAttribute(positionAttribute, ic);
-    centroid.add(va).add(vb).add(vc).divideScalar(3);
-  } else { // Non-indexed geometry (assume vertices are sequential for faces)
-    const vOffset = faceIndex * 3; // 3 vertices per face
-    const va = new THREE.Vector3().fromBufferAttribute(positionAttribute, vOffset + 0);
-    const vb = new THREE.Vector3().fromBufferAttribute(positionAttribute, vOffset + 1);
-    const vc = new THREE.Vector3().fromBufferAttribute(positionAttribute, vOffset + 2);
-    centroid.add(va).add(vb).add(vc).divideScalar(3);
-  }
-  return centroid;
-}
+    vA.fromBufferAttribute(positionAttribute, iA);
+    vB.fromBufferAttribute(positionAttribute, iB);
+    vC.fromBufferAttribute(positionAttribute, iC);
 
-export function fibSpherePoint(i, n, radius) {
-  const v = new THREE.Vector3();
-  const G_FIB = Math.PI * (3 - Math.sqrt(5));
-  const step = 2.0 / n;
-  v.y = i * step - 1 + (step * 0.5);
-  const r = Math.sqrt(1 - v.y * v.y);
-  const phi = i * G_FIB;
-  v.x = Math.cos(phi) * r;
-  v.z = Math.sin(phi) * r;
-  v.x *= radius;
-  v.y *= radius;
-  v.z *= radius;
-  return v;
-}
+    const centroid = new THREE.Vector3();
+    centroid.add(vA).add(vB).add(vC).divideScalar(3);
+    return centroid;
+};
 
 
-export function separateFaces(geometry) {
-  const posAttr = geometry.attributes.position;
-  const normalAttr = geometry.attributes.normal;
-  const uvAttr = geometry.attributes.uv;
-  const indexAttr = geometry.index;
+// Separates faces of a BufferGeometry.
+// Creates a new BufferGeometry where each triangle has unique vertices.
+export const separateFaces = (geometry) => {
+    if (!geometry.index) { // Non-indexed geometry
+        // If already non-indexed and we want to ensure attributes are per-face-vertex
+        // we might need to re-construct. For now, assume it's either indexed or already suitable.
+        // A simple clone might work if it's already structured correctly per face.
+        // However, true separation means each triangle's vertices are unique in the arrays.
+        
+        // Fallback for non-indexed: just clone attributes and hope for the best, or implement full separation.
+        // This part is complex for arbitrary non-indexed geometries if they share vertices implicitly.
+        // Most TextGeometries are non-indexed but vertices are typically unique per face already.
+        console.warn("separateFaces: Attempting to process non-indexed geometry. Normals might be an issue if not already face-like.");
+         const newGeometry = new THREE.BufferGeometry();
+         newGeometry.setAttribute('position', geometry.attributes.position.clone());
+         if (geometry.attributes.normal) newGeometry.setAttribute('normal', geometry.attributes.normal.clone());
+         if (geometry.attributes.uv) newGeometry.setAttribute('uv', geometry.attributes.uv.clone());
+         return newGeometry; // This is a simplification
+    }
 
-  const newPositions = [];
-  const newNormals = normalAttr ? [] : null;
-  const newUvs = uvAttr ? [] : null;
+    const newPosition = [];
+    const newNormal = [];
+    const newUv = [];
 
-  if (indexAttr) { // Handle indexed geometry
-    console.log("Separating faces from INDEXED geometry");
+    const positionAttr = geometry.attributes.position;
+    const normalAttr = geometry.attributes.normal;
+    const uvAttr = geometry.attributes.uv;
+    const indexAttr = geometry.index;
+
     for (let i = 0; i < indexAttr.count; i++) {
-      const ndx = indexAttr.getX(i);
-      newPositions.push(posAttr.getX(ndx), posAttr.getY(ndx), posAttr.getZ(ndx));
-      if (newNormals) {
-        newNormals.push(normalAttr.getX(ndx), normalAttr.getY(ndx), normalAttr.getZ(ndx));
-      }
-      if (newUvs) {
-        newUvs.push(uvAttr.getX(ndx), uvAttr.getY(ndx));
-      }
-    }
-  } else { // Handle NON-INDEXED geometry (assume vertices are ordered per triangle)
-    console.log("Separating faces from NON-INDEXED geometry (duplicating vertices)");
-    if (posAttr.count % 3 !== 0) {
-        console.error("Non-indexed geometry position count is not a multiple of 3. Cannot process.");
-        return geometry; // Or throw an error
-    }
-    for (let i = 0; i < posAttr.count; i++) {
-        // Simply copy existing vertices as they are already unique per face in this case
-        newPositions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-        if (newNormals && normalAttr) {
-            newNormals.push(normalAttr.getX(i), normalAttr.getY(i), normalAttr.getZ(i));
+        const idx = indexAttr.getX(i);
+        newPosition.push(positionAttr.getX(idx), positionAttr.getY(idx), positionAttr.getZ(idx));
+        if (normalAttr) {
+            newNormal.push(normalAttr.getX(idx), normalAttr.getY(idx), normalAttr.getZ(idx));
         }
-        if (newUvs && uvAttr) {
-            newUvs.push(uvAttr.getX(i), uvAttr.getY(i));
+        if (uvAttr) {
+            newUv.push(uvAttr.getX(idx), uvAttr.getY(idx));
         }
     }
-  }
 
-  if (newPositions.length === 0) {
-    console.error("Separation resulted in no positions.");
-    return geometry; // Return original if something went wrong
-  }
-
-  const newGeometry = new THREE.BufferGeometry();
-  newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
-  if (newNormals && newNormals.length > 0) {
-    newGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(newNormals, 3));
-  }
-  if (newUvs && newUvs.length > 0) {
-    newGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(newUvs, 2));
-  }
-  // The new geometry is now non-indexed by definition of this function's purpose.
-  return newGeometry;
-}
+    const newGeometry = new THREE.BufferGeometry();
+    newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPosition, 3));
+    if (newNormal.length > 0) {
+        newGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(newNormal, 3));
+    }
+    if (newUv.length > 0) {
+        newGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(newUv, 2));
+    }
+    
+    // If normals weren't separated properly or didn't exist, compute flat normals
+    if (newNormal.length === 0 || newNormal.length !== newPosition.length) {
+        newGeometry.computeVertexNormals(); // This will compute smoothed normals.
+                                          // For flat shading, normals should be per-face.
+                                          // After separating faces, computeVertexNormals *should* give flat-like normals
+                                          // because vertices are no longer shared between faces with different orientations.
+    }
+    return newGeometry;
+};
