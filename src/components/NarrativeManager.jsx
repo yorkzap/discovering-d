@@ -8,8 +8,7 @@ import * as THREE from "three";
 let nextTextId = 0;
 const getUniqueId = () => `bas-narrative-${nextTextId++}`;
 
-// Out animation duration is primarily controlled by LERP_SPEED_OVERALL when targetProgress = 0.0 in AnimatedBasText
-const TEXT_ANIMATE_OUT_EFFECTIVE_DURATION = 600; // Estimate for uProgress to go 1->0. Adjust if LERP_SPEED_OVERALL changes for out.
+const TEXT_ANIMATE_OUT_EFFECTIVE_DURATION = 450; // Can be slightly faster if animation is faster
 
 export const NarrativeManager = ({ bookGroupRef }) => {
   const [currentPageIndexAtom] = useAtom(pageAtom);
@@ -25,54 +24,54 @@ export const NarrativeManager = ({ bookGroupRef }) => {
       }
       const baseBookPos = bookWorldPosition.current;
       const PAGE_HEIGHT = 1.71;
-      const TEXT_SIZE_PARAM = 0.09; // MATCHES AnimatedBasText default textParams.size
-      const LINE_SPACING = TEXT_SIZE_PARAM * 1.8; // Adjust spacing based on new size
+      const TEXT_SIZE_PARAM = 0.055; // MATCHES AnimatedBasText new default textParams.size
+      const LINE_SPACING = TEXT_SIZE_PARAM * 2.0; // Slightly more relative spacing for smaller text to maintain readability
       
       const textX = baseBookPos.x;
       const totalTextBlockHeight = (totalLines - 1) * LINE_SPACING;
-      const yOffsetForTextBlockCenter = PAGE_HEIGHT * 0.40 + totalTextBlockHeight / 2; // Fine-tune Y
+      // Adjust Y offset: start higher if text is smaller to keep it above book center
+      const yOffsetForTextBlockCenter = PAGE_HEIGHT * 0.44 + totalTextBlockHeight / 2; 
       const textY = baseBookPos.y + yOffsetForTextBlockCenter - (lineIndex * LINE_SPACING);
-      const textZ = baseBookPos.z + 0.35; // Adjust Z if needed with new size
+      const textZ = baseBookPos.z + 0.25; // Bring even closer to book if smaller
       return [textX, textY, textZ];
     },
     [bookGroupRef]
   );
 
   useEffect(() => {
-    if (activeNarratives.length > 0 && managedPageIndex !== currentPageIndexAtom) {
+    const previousManagedIndex = managedPageIndex;
+    setManagedPageIndex(currentPageIndexAtom);
+
+    if (activeNarratives.length > 0 && previousManagedIndex !== currentPageIndexAtom) {
       setActiveNarratives(prev => {
         const newAnimatingOut = new Set();
         const next = prev.map(n => {
           if (n.visible) newAnimatingOut.add(n.id);
-          return { ...n, visible: false, initialDelay: 0 }; // Animate out immediately
+          return { ...n, visible: false, initialDelay: 0 };
         });
         animatingOutIds.current = newAnimatingOut;
-        if(newAnimatingOut.size === 0){ // If nothing was visible to animate out, proceed
+        if(newAnimatingOut.size === 0 && animatingOutIds.current.size === 0){ 
              loadNewPageTexts(currentPageIndexAtom);
         }
         return next;
       });
-    } else if (managedPageIndex !== currentPageIndexAtom || activeNarratives.length === 0 ) {
+    } else if (previousManagedIndex !== currentPageIndexAtom || activeNarratives.length === 0 ) {
       animatingOutIds.current.clear();
       loadNewPageTexts(currentPageIndexAtom);
     }
-    setManagedPageIndex(currentPageIndexAtom);
-  }, [currentPageIndexAtom]); // Removed loadNewPageTexts from dep array to avoid loops, it's called internally
+  }, [currentPageIndexAtom]);
+
 
   const loadNewPageTexts = useCallback((pageIndexToShow) => {
     const pageData = pages[pageIndexToShow];
     const narrativeLines = pageData?.narrative || [];
 
-    if (!pageData && pageIndexToShow >=0 && pageIndexToShow < pages.length) {
+    if ((!pageData && pageIndexToShow >=0 && pageIndexToShow < pages.length) || narrativeLines.length === 0) {
       setActiveNarratives([]); return;
     }
-    if (narrativeLines.length === 0) {
-       setActiveNarratives([]); return;
-    }
 
-    // ADJUSTED: Faster appearance of new text
-    const pageTurnSettleDelay = 350; // Reduced delay after page turn logic
-    const interLineStagger = 200;   // Reduced stagger between lines
+    const pageTurnSettleDelay = 200; // ADJUSTED: Even faster
+    const interLineStagger = 120;   // ADJUSTED: Even faster
 
     const newNarratives = narrativeLines.map((line, index) => ({
       id: getUniqueId(),
@@ -80,36 +79,34 @@ export const NarrativeManager = ({ bookGroupRef }) => {
       targetPosition: calculateTextPosition(index, narrativeLines.length),
       visible: true,
       initialDelay: pageTurnSettleDelay + (index * interLineStagger),
-      // Override params from AnimatedBasText if needed, or let defaults apply
       textParams: { 
-        size: 0.09, // Consistent smaller size
-        depth: 0.015, 
-        curveSegments: 3 
+        size: 0.055, // Consistent smaller size
+        depth: 0.008, 
+        curveSegments: 2 
       },
       animationParams: { 
-        minDuration: 0.7, maxDuration: 1.1, stretch: 0.1,
-        lengthFactor: 0.035, explodeSphereRadius: 0.35, 
-        rotationFactor: Math.PI * 1.5,
+        minDuration: 0.6, maxDuration: 1.0, stretch: 0.08,
+        lengthFactor: 0.03, explodeSphereRadius: 0.25, 
+        rotationFactor: Math.PI * 1.3,
       },
     }));
     setActiveNarratives(newNarratives);
-  }, [calculateTextPosition]); // currentPageIndexAtom removed as it's passed as arg
+  }, [calculateTextPosition]);
 
 
   const handleTextAnimationComplete = useCallback((textId, wasMadeVisible) => {
     if (!wasMadeVisible) {
       animatingOutIds.current.delete(textId);
-      // If all texts that were animating out have finished
-      if (animatingOutIds.current.size === 0 && managedPageIndex === currentPageIndexAtom) {
-        // This condition means: we triggered a fade out, ALL faded out, and we are STILL on the target page.
-        // This is the primary path to load new texts AFTER old ones are gone.
-        loadNewPageTexts(currentPageIndexAtom);
-      } else if (animatingOutIds.current.size === 0 && managedPageIndex !== currentPageIndexAtom){
-        // This case should be rare if managedPageIndex is updated correctly.
-        // It means all faded out, but pageAtom has changed AGAIN. The useEffect on pageAtom will handle it.
+      if (animatingOutIds.current.size === 0 ) {
+        if (managedPageIndex === currentPageIndexAtom) {
+            const narrativesAreForOldPage = activeNarratives.some(n => !n.visible);
+            if (narrativesAreForOldPage || activeNarratives.length === 0) {
+                 loadNewPageTexts(currentPageIndexAtom);
+            }
+        }
       }
     }
-  }, [loadNewPageTexts, currentPageIndexAtom, managedPageIndex]);
+  }, [loadNewPageTexts, currentPageIndexAtom, managedPageIndex, activeNarratives]);
 
   return (
     <group name="NarrativeTextsContainer_BAS_Managed">
@@ -122,10 +119,10 @@ export const NarrativeManager = ({ bookGroupRef }) => {
           visible={narrative.visible}
           initialDelay={narrative.initialDelay}
           onAnimationComplete={handleTextAnimationComplete}
-          textParams={narrative.textParams} // Pass down specific params
-          animationParams={narrative.animationParams} // Pass down specific params
-          baseColor="#ddeeff" 
-          emissiveColor="#77aaff"
+          textParams={narrative.textParams}
+          animationParams={narrative.animationParams}
+          baseColor="#e0e8ff" // Slightly brighter base for smaller text
+          emissiveColor="#99bbff"
         />
       ))}
     </group>

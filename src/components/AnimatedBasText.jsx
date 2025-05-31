@@ -7,7 +7,7 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry';
 import { shaderMaterial } from '@react-three/drei';
 import { computeFaceCentroid, fibSpherePoint, separateFaces } from './textAnimationUtils';
 
-// --- Shaders (Keep the versions from the previous response that correctly form text) ---
+// --- Shaders (Keep as is from the version that correctly forms text) ---
 const vertexShader = `
   uniform float uProgress;
   uniform float uAnimationDuration;
@@ -78,21 +78,21 @@ export const AnimatedBasText = ({
   visible,
   initialDelay = 0,
   textParams = {
-    size: 0.09, // ADJUSTED: Smaller default size
-    depth: 0.015, // ADJUSTED: Slightly thinner
-    curveSegments: 3,
+    size: 0.055, // ADJUSTED: Even smaller default size
+    depth: 0.008, // ADJUSTED: Proportionally thinner
+    curveSegments: 2, // Keep low for performance
     bevelEnabled: false,
   },
   animationParams = {
-    minDuration: 0.7, // ADJUSTED: Faster individual particle animation
-    maxDuration: 1.1, // ADJUSTED: Faster individual particle animation
-    stretch: 0.1,   // ADJUSTED: Less stretch for faster feel
-    lengthFactor: 0.035, 
-    explodeSphereRadius: 0.35, // ADJUSTED: Smaller explosion radius
-    rotationFactor: Math.PI * 1.5,
+    minDuration: 0.6, // Can be a bit faster if particles are smaller
+    maxDuration: 1.0, 
+    stretch: 0.08,   
+    lengthFactor: 0.03, 
+    explodeSphereRadius: 0.25, // ADJUSTED: Smaller explosion radius for smaller text
+    rotationFactor: Math.PI * 1.3, // Slightly less rotation
   },
   baseColor = "#ddeeff",
-  emissiveColor = "#88aaff",
+  emissiveColor = "#99bbff", // Slightly brighter emissive for smaller text
   onAnimationComplete,
 }) => {
   const meshRef = useRef();
@@ -105,28 +105,26 @@ export const AnimatedBasText = ({
   const perFaceAnimationDurationRef = useRef(animationParams.maxDuration + animationParams.stretch);
 
   const textMeshGeometry = useMemo(() => {
+    // ... (Geometry generation logic - KEEP AS IS from previous correct version) ...
+    // ... including setIsGeometryReady(true) ...
     setIsGeometryReady(false);
     if (!font || !currentText || currentText.trim() === "") return null;
-    
     const currentTextParams = { font, ...textParams };
     if (currentTextParams.height && !currentTextParams.depth) {
         currentTextParams.depth = currentTextParams.height;
         delete currentTextParams.height;
     }
-
     let geom = new TextGeometry(currentText, currentTextParams);
     geom.computeBoundingBox();
-    const sizeVec = new THREE.Vector3(); // Renamed to avoid conflict with textParams.size
+    const sizeVec = new THREE.Vector3();
     geom.boundingBox.getSize(sizeVec);
     geom.translate(-sizeVec.x / 2, -sizeVec.y / 2, -sizeVec.z / 2);
     let separatedGeom = separateFaces(geom);
     geom.dispose();
-
     if (!separatedGeom || !separatedGeom.attributes.position || separatedGeom.attributes.position.count === 0) {
       console.error(`AnimatedBasText [${id}]: Failed separatedGeom.`);
       return null;
     }
-
     const posAttr = separatedGeom.attributes.position;
     const numVertices = posAttr.count;
     const numFaces = numVertices / 3;
@@ -138,7 +136,6 @@ export const AnimatedBasText = ({
     const geomCenter = new THREE.Vector3(); 
     tempBoundingBox.getCenter(geomCenter);
     const geomMaxLength = tempBoundingBox.max.distanceTo(geomCenter) || 1.0;
-
     for (let i = 0; i < numFaces; i++) {
       const vA_orig = new THREE.Vector3().fromBufferAttribute(posAttr, i * 3 + 0);
       const vB_orig = new THREE.Vector3().fromBufferAttribute(posAttr, i * 3 + 1);
@@ -167,12 +164,14 @@ export const AnimatedBasText = ({
   }, [font, currentText, textParams, animationParams]);
 
   useEffect(() => { 
+    // ... (Text change handling - KEEP AS IS) ...
     if (text !== currentText) {
       setCanStartAnimation(false); animationCompletionState.current = null; setCurrentText(text);
     }
   }, [text, currentText]);
 
   useEffect(() => { 
+    // ... (Animation trigger logic - KEEP AS IS) ...
     let timer;
     if (visible && isGeometryReady) {
       timer = setTimeout(() => {
@@ -192,29 +191,22 @@ export const AnimatedBasText = ({
   }, [visible, initialDelay, id, isGeometryReady]);
 
   useFrame((state, delta) => {
+    // ... (useFrame logic to update uProgress, uOpacity, uAnimationDuration, mesh position, onAnimationComplete - KEEP AS IS) ...
     if (!materialRef.current || !meshRef.current || !textMeshGeometry || !isGeometryReady) return;
-
     const targetOverallProgress = visible && canStartAnimation ? 1.0 : 0.0;
-    // ADJUSTED: Faster LERP for forming, slightly faster for exploding too
-    const LERP_SPEED_OVERALL = targetOverallProgress === 1.0 ? 1.5 : 2.2; 
-    
+    const LERP_SPEED_OVERALL = targetOverallProgress === 1.0 ? 1.7 : 2.4; // Slightly faster LERP again
     const currentOverallProgress = materialRef.current.uProgress;
     let newOverallProgress = THREE.MathUtils.lerp(
-      currentOverallProgress,
-      targetOverallProgress,
-      LERP_SPEED_OVERALL * delta
+      currentOverallProgress, targetOverallProgress, LERP_SPEED_OVERALL * delta
     );
     if (targetOverallProgress === 1.0) newOverallProgress = Math.min(newOverallProgress, 1.0);
     else newOverallProgress = Math.max(newOverallProgress, 0.0);
-    
     if (Math.abs(currentOverallProgress - newOverallProgress) > 0.00001) {
         materialRef.current.uProgress = newOverallProgress;
         materialRef.current.uOpacity = newOverallProgress; 
     }
     materialRef.current.uAnimationDuration = perFaceAnimationDurationRef.current;
-
-    if (targetPosition) meshRef.current.position.lerp(new THREE.Vector3(...targetPosition), 3.5 * delta); // Slightly faster position lerp
-
+    if (targetPosition) meshRef.current.position.lerp(new THREE.Vector3(...targetPosition), 3.8 * delta); // Faster position settlement
     if (onAnimationComplete && canStartAnimation) {
       const progress = materialRef.current.uProgress;
       const threshold = 0.035; 
